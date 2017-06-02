@@ -1,4 +1,5 @@
 #include "autoexposure.h"
+#include <math.h>
 
 static inline int32_t upAndClip(int32_t newExposure, int32_t lastExposure) {
 	// Ensure increase.
@@ -20,17 +21,27 @@ static inline int32_t downAndClip(int32_t newExposure, int32_t lastExposure) {
 		newExposure--;
 	}
 
-	// Clip exposure at minimum (0µs).
-	if (newExposure < 0) {
-		newExposure = 0;
+	// Clip exposure at minimum (1µs).
+	if (newExposure < 1) {
+		newExposure = 1;
 	}
 
 	return (newExposure);
 }
 
-int32_t autoExposureCalculate(autoExposureState state, caerFrameEventConst frame, uint32_t exposureLastSetValue) {
-	caerLog(CAER_LOG_DEBUG, "AutoExposure", "Last set exposure value was: %d.", exposureLastSetValue);
-	caerLog(CAER_LOG_DEBUG, "AutoExposure", "Frame exposure value was: %d.", caerFrameEventGetExposureLength(frame));
+int32_t autoExposureCalculate(autoExposureState state, caerFrameEventConst frame, uint32_t exposureFrameValue,
+	uint32_t exposureLastSetValue) {
+#if AUTOEXPOSURE_ENABLE_DEBUG_LOGGING == 1
+	caerLog(CAER_LOG_ERROR, "AutoExposure", "Last set exposure value was: %d.", exposureLastSetValue);
+	caerLog(CAER_LOG_ERROR, "AutoExposure", "Frame exposure value was: %d.", exposureFrameValue);
+	caerLog(CAER_LOG_ERROR, "AutoExposure", "Real frame exposure value was: %d.",
+		caerFrameEventGetExposureLength(frame));
+#endif
+
+	// Only run if the frame corresponds to the last set value.
+	if (exposureFrameValue != exposureLastSetValue) {
+		return (-1);
+	}
 
 	int32_t frameSizeX = caerFrameEventGetLengthX(frame);
 	int32_t frameSizeY = caerFrameEventGetLengthY(frame);
@@ -74,55 +85,83 @@ int32_t autoExposureCalculate(autoExposureState state, caerFrameEventConst frame
 	float pixelsFracLow = (float) pixelsSumLow / (float) pixelsSum;
 	float pixelsFracHigh = (float) pixelsSumHigh / (float) pixelsSum;
 
-	caerLog(CAER_LOG_DEBUG, "AutoExposure",
+#if AUTOEXPOSURE_ENABLE_DEBUG_LOGGING == 1
+	caerLog(CAER_LOG_ERROR, "AutoExposure",
 		"BinLow: %zu, BinHigh: %zu, Sum: %zu, SumLow: %zu, SumHigh: %zu, FracLow: %f, FracHigh: %f.", pixelsBinLow,
 		pixelsBinHigh, pixelsSum, pixelsSumLow, pixelsSumHigh, (double) pixelsFracLow, (double) pixelsFracHigh);
+#endif
+
+	float fracLowError = pixelsFracLow - AUTOEXPOSURE_UNDEROVER_FRAC;
+	float fracHighError = pixelsFracHigh - AUTOEXPOSURE_UNDEROVER_FRAC;
 
 	// Exposure okay by default.
 	int32_t newExposure = -1;
 
 	if ((pixelsFracLow >= AUTOEXPOSURE_UNDEROVER_FRAC) && (pixelsFracHigh < AUTOEXPOSURE_UNDEROVER_FRAC)) {
 		// Underexposed but not overexposed.
-		newExposure = I32T((float) exposureLastSetValue * (1.0f + AUTOEXPOSURE_UNDEROVER_CORRECTION));
+		newExposure = I32T(
+			exposureLastSetValue) + I32T(AUTOEXPOSURE_UNDEROVER_CORRECTION * powf(fracLowError, 1.65f));
 
 		newExposure = upAndClip(newExposure, I32T(exposureLastSetValue));
 	}
 	else if ((pixelsFracHigh >= AUTOEXPOSURE_UNDEROVER_FRAC) && (pixelsFracLow < AUTOEXPOSURE_UNDEROVER_FRAC)) {
 		// Overexposed but not underexposed.
-		newExposure = I32T((float) exposureLastSetValue * (1.0f - AUTOEXPOSURE_UNDEROVER_CORRECTION));
+		newExposure = I32T(
+			exposureLastSetValue) - I32T(AUTOEXPOSURE_UNDEROVER_CORRECTION * powf(fracHighError, 1.65f));
 
 		newExposure = downAndClip(newExposure, I32T(exposureLastSetValue));
 	}
 	else {
-//		// Calculate mean sample value from histogram.
-//		float meanSampleValueNum = 0, meanSampleValueDenom = 0;
-//
-//		for (size_t i = 0; i < AUTOEXPOSURE_HISTOGRAM_MSV; i++) {
-//			meanSampleValueNum += ((float) i + 1.0f) * (float) state->msvHistogram[i];
-//			meanSampleValueDenom += (float) state->msvHistogram[i];
-//		}
-//
-//		float meanSampleValue = meanSampleValueNum / meanSampleValueDenom;
-//		float meanSampleValueError = (AUTOEXPOSURE_HISTOGRAM_MSV / 2.0f) - meanSampleValue;
-//
-//		caerLog(CAER_LOG_DEBUG, "AutoExposure", "Mean sample value error is: %f.", (double) meanSampleValueError);
-//
-//		// If we're not too underexposed or overexposed, use MSV to optimize.
-//		if (meanSampleValueError > 0.1f) {
-//			// Underexposed.
-//			newExposure = I32T(
-//				exposureLastSetValue) + I32T(AUTOEXPOSURE_MSV_CORRECTION * meanSampleValueError * meanSampleValueError);
-//
-//			newExposure = upAndClip(newExposure, I32T(exposureLastSetValue));
-//		}
-//		else if (meanSampleValueError < -0.1f) {
-//			// Overexposed.
-//			newExposure = I32T(
-//				exposureLastSetValue) - I32T(AUTOEXPOSURE_MSV_CORRECTION * meanSampleValueError * meanSampleValueError);
-//
-//			newExposure = downAndClip(newExposure, I32T(exposureLastSetValue));
-//		}
+		// Calculate mean sample value from histogram.
+		float meanSampleValueNum = 0, meanSampleValueDenom = 0;
+
+		for (size_t i = 0; i < AUTOEXPOSURE_HISTOGRAM_MSV; i++) {
+			meanSampleValueNum += ((float) i + 1.0f) * (float) state->msvHistogram[i];
+			meanSampleValueDenom += (float) state->msvHistogram[i];
+		}
+
+		// Prevent division by zero.
+		if (meanSampleValueDenom == 0) {
+			meanSampleValueDenom = 1.0f;
+		}
+
+		float meanSampleValue = meanSampleValueNum / meanSampleValueDenom;
+		float meanSampleValueError = (AUTOEXPOSURE_HISTOGRAM_MSV / 2.0f) - meanSampleValue;
+
+#if AUTOEXPOSURE_ENABLE_DEBUG_LOGGING == 1
+		caerLog(CAER_LOG_ERROR, "AutoExposure", "Mean sample value error is: %f.", (double) meanSampleValueError);
+#endif
+
+		// If we're close to the under/over limits, we make the magnitude of changes smaller
+		// to avoid back&forth oscillations.
+		int32_t divisor = 1;
+		if (fabsf(fracLowError) < 0.1f || fabsf(fracHighError) < 0.1f) {
+			divisor = 5;
+		}
+		if (fabsf(fracLowError) < 0.05f || fabsf(fracHighError) < 0.05f) {
+			divisor = 10;
+		}
+
+		// If we're not too underexposed or overexposed, use MSV to optimize.
+		if (meanSampleValueError > 0.1f) {
+			// Underexposed.
+			newExposure = I32T(exposureLastSetValue)
+				+ (I32T(AUTOEXPOSURE_MSV_CORRECTION * powf(meanSampleValueError, 2.0f)) / divisor);
+
+			newExposure = upAndClip(newExposure, I32T(exposureLastSetValue));
+		}
+		else if (meanSampleValueError < -0.1f) {
+			// Overexposed.
+			newExposure = I32T(exposureLastSetValue)
+				- (I32T(AUTOEXPOSURE_MSV_CORRECTION * powf(meanSampleValueError, 2.0f)) / divisor);
+
+			newExposure = downAndClip(newExposure, I32T(exposureLastSetValue));
+		}
 	}
+
+#if AUTOEXPOSURE_ENABLE_DEBUG_LOGGING == 1
+	caerLog(CAER_LOG_ERROR, "AutoExposure", "New exposure value is: %d.", newExposure);
+#endif
 
 	return ((newExposure == I32T(exposureLastSetValue)) ? (-1) : (newExposure));
 }

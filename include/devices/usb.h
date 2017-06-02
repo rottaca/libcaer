@@ -33,6 +33,10 @@ typedef struct caer_device_handle *caerDeviceHandle;
  * Module address: host-side event packets generation configuration.
  */
 #define CAER_HOST_CONFIG_PACKETS -3
+/**
+ * Module address: host-side logging configuration.
+ */
+#define CAER_HOST_CONFIG_LOG -4
 
 /**
  * Parameter address for module CAER_HOST_CONFIG_USB:
@@ -106,13 +110,21 @@ typedef struct caer_device_handle *caerDeviceHandle;
 #define CAER_HOST_CONFIG_PACKETS_MAX_CONTAINER_INTERVAL    1
 
 /**
+ * Parameter address for module CAER_HOST_CONFIG_LOG:
+ * set the log-level for this device, to be used when logging
+ * messages. Defaults to the value of the global log-level
+ * when the device was first opened.
+ */
+#define CAER_HOST_CONFIG_LOG_LEVEL 0
+
+/**
  * Open a specified USB device, assign an ID to it and return a handle for further usage.
  * Various means can be employed to limit the selection of the device.
  *
  * @param deviceID a unique ID to identify the device from others. Will be used as the
  *                 source for EventPackets being generate from its data.
  * @param deviceType type of the device to open. Currently supported are:
- *                   CAER_DEVICE_DVS128, CAER_DEVICE_DAVIS_FX2, CAER_DEVICE_DAVIS_FX3
+ *                   CAER_DEVICE_DVS128, CAER_DEVICE_DAVIS, CAER_DEVICE_DYNAPSE
  * @param busNumberRestrict restrict the search for viable devices to only this USB bus number.
  * @param devAddressRestrict restrict the search for viable devices to only this USB device address.
  * @param serialNumberRestrict restrict the search for viable devices to only devices which do
@@ -177,14 +189,14 @@ bool caerDeviceConfigSet(caerDeviceHandle handle, int8_t modAddr, uint8_t paramA
  *              parameter's current value. The integer will always be either set
  *              to zero (on failure), or to the current value (on success).
  *
- * @return true if sending the configuration was successful, false on errors.
+ * @return true if getting the configuration was successful, false on errors.
  */
 bool caerDeviceConfigGet(caerDeviceHandle handle, int8_t modAddr, uint8_t paramAddr, uint32_t *param);
 
 /**
- * Start getting data from the device, setting up the USB data transfer thread
+ * Start getting data from the device, setting up the USB data transfers
  * and starting the data producers (see CAER_HOST_CONFIG_DATAEXCHANGE_START_PRODUCERS).
- * Supports notification of new data and shutdown events via user-defined call-backs.
+ * Supports notification of new data and exceptional shutdown events via user-defined call-backs.
  *
  * @param handle a valid device handle.
  * @param dataNotifyIncrease function pointer, called every time a new piece of data
@@ -195,10 +207,10 @@ bool caerDeviceConfigGet(caerDeviceHandle handle, int8_t modAddr, uint8_t paramA
  *                           dataNotifyUserPtr will be passed as parameter to the function.
  * @param dataNotifyUserPtr pointer that will be passed to the dataNotifyIncrease and
  *                          dataNotifyDecrease functions. Can be NULL.
- * @param dataShutdownNotify function pointer, called on shut-down of the USB data transfer
- *                           thread. This can be used to detect exceptional shut-downs that
- *                           do not come from calling caerDeviceDataStop(), such as when the
- *                           device is disconnected or all USB transfers fail.
+ * @param dataShutdownNotify function pointer, called on exceptional shut-down of the USB
+ *                           data transfers. This is used to detect exceptional shut-downs
+ *                           that do not come from calling caerDeviceDataStop(), such as
+ *                           when the device is disconnected or all USB transfers fail.
  * @param dataShutdownUserPtr pointer that will be passed to the dataShutdownNotify
  *                            function. Can be NULL.
  *
@@ -209,9 +221,9 @@ bool caerDeviceDataStart(caerDeviceHandle handle, void (*dataNotifyIncrease)(voi
 	void *dataShutdownUserPtr);
 
 /**
- * Stop getting data from the device, shutting down the USB data transfer thread
+ * Stop getting data from the device, shutting down the USB data transfers
  * and stopping the data producers (see CAER_HOST_CONFIG_DATAEXCHANGE_STOP_PRODUCERS).
- * This normal shut-down will also generate a notification (see caerDeviceDataStart()).
+ * This normal shut-down will not generate a notification (see caerDeviceDataStart()).
  *
  * @param handle a valid device handle.
  *

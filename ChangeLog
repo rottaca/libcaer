@@ -1,10 +1,65 @@
-Release 2.0.3 - XX.05.2017 - IN_DEVELOPMENT
+Release 2.1.5 - 02.06.2017
+BUG FIXES
+- DAVIS FX3: require new logic revision 9910 for FX3 devices.
+  This fixes a bug in timestamp synchronization between multiple
+  cameras, and improves precision of some time related parameters,
+  namely APS_EXPOSURE, APS_FRAME_DELAY and USB_EARLY_PACKET_DELAY.
+- DAVIS: fix incorrect extra log message when opening FX3 devices.
+
+
+Release 2.1.4 - 30.05.2017
+BUG FIXES
+- C++: functions defined in C++ header files, such as happens in log or
+  utils, need the inline keyword to allow the linker to resolve symbols
+  properly. Fixes #14.
+
+
+Release 2.1.3 - 28.05.2017
+NEW FEATURES
+- DAVIS: new device type CAER_DEVICE_DAVIS is now available, handles both
+  FX2 and FX3 board-based devices transparently.
+
+BUG FIXES
+- C++ devices/usb.hpp: add missing std::string include.
+- Devices: log failure to put new event packet containers on ring-buffer for
+  consumption by clients with higher log-level of CAER_LOG_NOTICE.
+
+
+Release 2.1.2 - 24.05.2017
+BUG FIXES
+- FrameUtils/C++ FrameEvent: fix detection of OpenCV presence.
+- CMake: add dependency on libm for math.h functions.
+
+
+Release 2.1.1 - 23.05.2017
+BUG FIXES
+- AutoExposure: disable debug logging.
+- AutoExposure: get out of highly over/under-exposed situations much faster.
+
+
+Release 2.1.0 - 22.05.2017
+INCOMPATIBLE CHANGES
+- usb.h: the 'dataShutdownNotify' callback of caerDeviceDataStart() will only
+  be called on exceptional shutdowns now. Normal shutdowns, such as those from
+  calling caerDeviceDataStop(), will not execute the callback anymore.
+  The documentation for caerDeviceDataStart() and caerDeviceDataStop() has been
+  updated accordingly.
+- DAVIS: requires new logic revision 9880.
+
 NEW FEATURES
 - davis.h: added automatic exposure control, can be turned on/off with
   the DAVIS_CONFIG_APS_AUTOEXPOSURE configuration parameter, defaults to off.
-- C++ events/frame.hpp: added new function getOpenCVMat() to frame event, if
+- EventPackets (C/C++): added caerEventPacketGetDataSize() and
+  caerEventPacketGetSize() functions to easily get packet size in bytes.
+- C++ FrameEvent: added new function getOpenCVMat() to frame event, if
   OpenCV is enabled. Returns a cv::Mat representing the frame's pixels, with
   support for deep-const by cloning (can be disabled for efficiency).
+- C++ Utils: enhanced makeUniqueFromCStruct() and makeSharedFromCStruct() to
+  also allow a 'takeMemoryOwnership' parameter that is forwarded to the event
+  packet constructors; it defaults to true like the constructors themselves.
+- Devices (C/C++): added new CAER_HOST_CONFIG_LOG config module with parameter
+  CAER_HOST_CONFIG_LOG_LEVEL to set per-device log-level; by default the
+  log-level is equal to the current global one at device opening.
 
 BUG FIXES
 - libcaer.hpp: undefine log-level names to avoid name clashes.
@@ -12,6 +67,12 @@ BUG FIXES
   offered, all have 10 bits precision.
 - DAVIS: fix black APS pixels on very high illumination.
 - DAVIS240: fix low range of APS pixels due to reduced ADC dynamic range.
+- USB: libusb-based USB communication completely rewritten, now there is one
+  thread responsible for USB event handling only, while transfers are sent,
+  started/stopped etc. from other threads. This avoids possible dead-locks,
+  or other threads stealing the USB event handling, or new settings not being
+  sent to the device under certain load conditions. This required a small
+  change in the API, please see "INCOMPATIBLE CHANGES" above for more details.
 
 
 Release 2.0.2 - 27.04.2017
