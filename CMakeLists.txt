@@ -136,7 +136,7 @@ ENDIF()
 
 # Enable all warnings for GCC / Clang
 IF (CC_GCC OR CC_CLANG)
-	SET(WARN_COMMON_FLAGS "-pedantic -Wall -Wextra")
+	SET(WARN_COMMON_FLAGS "-pedantic -Wall -Wextra -z defs")
 	SET(WARN_C_FLAGS "")
 	SET(WARN_CXX_FLAGS "")
 
