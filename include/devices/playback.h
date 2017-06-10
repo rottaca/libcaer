@@ -9,7 +9,7 @@ extern "C" {
     typedef struct playback_state *playbackState;
     typedef struct playback_handle *playbackHandle;
 
-    playbackHandle playbackOpen( const char *fileName);
+    playbackHandle playbackOpen( const char *fileName, void (*playbackFinishedCallback) (void*), void* param);
     int playbackClose(playbackHandle handle);
 
     int playbackDataStart(playbackHandle handle);

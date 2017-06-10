@@ -25,6 +25,9 @@ struct playback_state {
   char deviceThreadName[15 + 1]; // +1 for terminating NUL character.
 
   // Data Acquisition Thread
+  void (*playbackFinishedCallback) (void*);
+  void* callbackParam;
+
   thrd_t dataAcquisitionThread;
   atomic_bool dataAcquisitionThreadRun;
   atomic_uint_fast32_t dataAcquisitionThreadConfigUpdate;
@@ -302,7 +305,7 @@ static inline void freeAllDataMemory(playbackState state) {
   }
 }
 
-playbackHandle playbackOpen(const char *fileName) {
+playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallback) (void*), void *param) {
 
   playbackHandle handle = calloc(1, sizeof(*handle));
   if (handle == NULL) {
@@ -314,6 +317,8 @@ playbackHandle playbackOpen(const char *fileName) {
   playbackState state = &handle->state;
   handle->info.deviceString = calloc(sizeof(char),strlen(fileName)+1);
   memcpy(handle->info.deviceString,fileName,strlen(fileName));
+  state->playbackFinishedCallback = playbackFinishedCallback;
+  state->callbackParam = param;
 
   // Initialize state variables to default values (if not zero, taken care of by calloc above).
   atomic_store_explicit(&state->dataExchangeBufferSize, 64, memory_order_relaxed);
@@ -2120,6 +2125,9 @@ static int playbackDataAcquisitionThread(void *inPtr) {
   // Cancel all transfers and handle them.
   //usbDeallocateTransfers(&state->usbState);
 
+  if(state->playbackFinishedCallback != NULL){
+    state->playbackFinishedCallback(state->callbackParam);
+  }
   // Ensure shutdown is stored and notified, could be because of all data transfers going away!
   atomic_store(&state->dataAcquisitionThreadRun, false);
 
