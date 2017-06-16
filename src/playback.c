@@ -37,7 +37,9 @@ struct playback_state {
   int32_t lastTimestamp;
   int32_t currentTimestamp;
   int32_t startTimestamp;
-  uint64_t hostStartTime;
+  int64_t hostStartTime;
+
+  float playbackSpeed;
 
   bool flipY;
   // DVS specific fields
@@ -104,6 +106,7 @@ struct playback_state {
   // Current composite events, for later copy, to not loose them on commits.
   caerFrameEvent currentFrameEvent[APS_ROI_REGIONS_MAX];
   struct caer_imu6_event currentIMU6Event;
+
 };
 
 struct playback_handle {
@@ -112,6 +115,8 @@ struct playback_handle {
   struct caer_davis_info info;
   // State for data management, common to all DAVIS.
   struct playback_state state;
+
+  struct playback_info playbackInfo;
 };
 
 
@@ -305,6 +310,15 @@ static inline void freeAllDataMemory(playbackState state) {
   }
 }
 
+playbackInfo caerPlaybackInfoGet(playbackHandle handle)
+{
+    if (handle == NULL) {
+      return (NULL);
+    } else {
+        return &handle->playbackInfo;
+    }
+}
+
 playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallback) (void*), void *param) {
 
   playbackHandle handle = calloc(1, sizeof(*handle));
@@ -358,6 +372,8 @@ playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallbac
       state->dvsSizeY = 180;
       state->apsSizeX = state->dvsSizeX;
       state->apsSizeY = state->dvsSizeY;
+      handle->playbackInfo.sx = state->dvsSizeX;
+      handle->playbackInfo.sy = state->dvsSizeY;
       state->flipY = true;
       sizeSet = true;
     }
@@ -411,6 +427,7 @@ playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallbac
   state->apsResetRead = -1;//param32;
   state->startTimestamp = -1;
   state->hostStartTime = -1;
+  state->playbackSpeed = 1;
   printf("Parsed file header of %s with success.\n", fileName);
 
 return handle;
@@ -616,6 +633,16 @@ static inline void initContainerCommitTimestamp(playbackState state) {
     state->currentPacketContainerCommitTimestamp = state->currentTimestamp
       + I32T(atomic_load_explicit(&state->maxPacketContainerInterval, memory_order_relaxed)) - 1;
   }
+}
+
+void playbackChangeSpeed(playbackHandle handle, float speed)
+{
+    if(handle != NULL && speed > 0 ){
+
+        handle->state.startTimestamp = -1;
+        atomic_store_explicit(&handle->state.playbackSpeed,speed, memory_order_relaxed);
+
+    }
 }
 
 static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t bytesSent) {
@@ -966,10 +993,12 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
             state->startTimestamp = timestamp;
             state->hostStartTime = getCurrTime();
         }else{
+            float speed = atomic_load_explicit(&state->playbackSpeed,memory_order_relaxed);
             uint64_t currTime = getCurrTime();
-            int64_t hostTimeDiff = currTime-state->hostStartTime;
+            int64_t hostTimeDiff = (currTime-state->hostStartTime)*speed;
             int64_t camTimeDiff = timestamp-state->startTimestamp;
             int64_t diff = camTimeDiff-hostTimeDiff;
+
             if(diff > 0)
             {
                 usleep(diff);
