@@ -41,17 +41,20 @@ struct playback_state {
 
   float playbackSpeed;
 
-  bool flipY;
+  bool lastAPSEventWasReset;
+  uint32_t pixelReceived;
   // DVS specific fields
   uint16_t dvsLastY;
   bool dvsGotY;
+  bool dvsFlipX;
+  bool dvsFlipY;
   int16_t dvsSizeX;
   int16_t dvsSizeY;
-  bool dvsInvertXY;
+
   // APS specific fields
   int16_t apsSizeX;
   int16_t apsSizeY;
-  bool apsInvertXY;
+
   bool apsFlipX;
   bool apsFlipY;
   bool apsIgnoreEvents;
@@ -153,7 +156,7 @@ static inline void updateROISizes(playbackState state) {
       state->apsROISizeX[i] = U16T(endColumn + 1 - startColumn);
       state->apsROISizeY[i] = U16T(endRow + 1 - startRow);
 
-      if (state->apsInvertXY) {
+      if (state->apsFlipX && state->apsFlipY) {
         // Inverted, so X[StartColumn] becomes endColumn. Y[endRow] becomes startRow.
         // Same accounting for origin in upper left corner, but on the other axis here.
         state->apsROIPositionX[i] = U16T(state->apsSizeX - 1 - endColumn);
@@ -187,7 +190,7 @@ static inline void initFrame(playbackHandle handle) {
   // }
 
   if (state->apsROIUpdate != 0) {
-    updateROISizes(state);
+    //updateROISizes(state);
   }
 
   // Skip frame if ROI region is disabled.
@@ -374,9 +377,18 @@ playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallbac
       state->apsSizeY = state->dvsSizeY;
       handle->playbackInfo.sx = state->dvsSizeX;
       handle->playbackInfo.sy = state->dvsSizeY;
-      state->flipY = true;
+
+      // TODO HARDCODED!
+      state->dvsFlipX = true;
+      state->dvsFlipY = true;
+      state->apsFlipY = true;
+
       sizeSet = true;
     }
+  }
+  if(!sizeSet){
+    printf("Unsupported camera!\n");
+    return false;
   }
   // TODO
   // See DAVIS.h to read this from file header
@@ -414,6 +426,8 @@ playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallbac
     state->apsROISizeX[i] = state->apsROIPositionX[i] = U16T(state->apsSizeX);
     state->apsROISizeY[i] = state->apsROIPositionY[i] = U16T(state->apsSizeY);
   }
+  state->apsROIPositionX[0] = 0;
+  state->apsROIPositionY[0] = 0;
 
   // Ignore multi-part events (APS and IMU) at startup, so that any initial
   // incomplete event is ignored. The START events reset this as soon as
@@ -801,120 +815,110 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
     // APS event
     if(((uint32_t)event >> 31)){
         uint8_t imuSample = (event >> 11) & 0x01;
+
         if(imuSample)
             continue;
+
         uint8_t signalRead = (event >> 10) & 0x01;
         uint16_t intensity = (event >> 0) & 0x1FF;
 
-/*
-        // If reset read, we store the values in a local array. If signal read, we
-        // store the final pixel value directly in the output frame event. We already
-        // do the subtraction between reset and signal here, to avoid carrying that
-        // around all the time and consuming memory. This way we can also only take
-        // infrequent reset reads and re-use them for multiple frames, which can heavily
-        // reduce traffic, and should not impact image quality heavily, at least in GS.
-        uint16_t xPos =
-          (state->apsFlipX) ?
-            (U16T(
-              caerFrameEventGetLengthX(state->currentFrameEvent[0]) - 1
-                - state->apsCountX[state->apsCurrentReadoutType])) :
-            (U16T(state->apsCountX[state->apsCurrentReadoutType]));
-        uint16_t yPos =
-          (state->apsFlipY) ?
-            (U16T(
-              caerFrameEventGetLengthY(state->currentFrameEvent[0]) - 1
-                - state->apsCountY[state->apsCurrentReadoutType])) :
-            (U16T(state->apsCountY[state->apsCurrentReadoutType]));
-
-        if (IS_DAVISRGB(handle->info.chipID)) {
-          yPos = U16T(yPos + state->apsRGBPixelOffset);
+        uint16_t x,y;
+        if(state->apsFlipX){
+            x = state->dvsSizeX -1 -(event & 0x003FF000) >> 12;
+        }
+        else{
+            x = (event & 0x003FF000) >> 12;
+        }
+        if(state->apsFlipY){
+            y = state->dvsSizeY -1 - ((event & 0x7FC00000) >> 22);
+        }
+        else{
+            y = (event & 0x7FC00000) >> 22;
         }
 
-        int32_t stride = 0;
 
-        if (state->apsInvertXY) {
-          SWAP_VAR(uint16_t, xPos, yPos);
-
-          stride = caerFrameEventGetLengthY(state->currentFrameEvent[0]);
-
-          // Flip Y address to conform to CG format.
-          yPos = U16T(caerFrameEventGetLengthX(state->currentFrameEvent[0]) - 1 - yPos);
-        }
-        else {
-          stride = caerFrameEventGetLengthX(state->currentFrameEvent[0]);
-
-          // Flip Y address to conform to CG format.
-          yPos = U16T(caerFrameEventGetLengthY(state->currentFrameEvent[0]) - 1 - yPos);
-        }
-
-        size_t pixelPosition = (size_t) (yPos * stride) + xPos;
-
-        // DAVIS240 has a reduced dynamic range due to external
-        // ADC high/low ref resistors not having optimal values.
-        // To fix this multiply by 1.95 to 2.15, so we choose to
-        // just shift by one (multiply by 2.00) for efficiency.
-        if (IS_DAVIS240(handle->info.chipID)) {
-          data = U16T(data << 1);
-        }
-
-        if ((state->apsCurrentReadoutType == APS_READOUT_RESET
-          && !(IS_DAVISRGB(handle->info.chipID) && state->apsGlobalShutter))
-          || (state->apsCurrentReadoutType == APS_READOUT_SIGNAL
-            && (IS_DAVISRGB(handle->info.chipID) && state->apsGlobalShutter))) {
-          state->apsCurrentResetFrame[pixelPosition] = data;
-        }
-        else {
-          uint16_t resetValue = 0;
-          uint16_t signalValue = 0;
-
-          if (IS_DAVISRGB(handle->info.chipID) && state->apsGlobalShutter) {
-            // DAVIS RGB GS has inverted samples, signal read comes first
-            // and was stored above inside state->apsCurrentResetFrame.
-            resetValue = data;
-            signalValue = state->apsCurrentResetFrame[pixelPosition];
-          }
-          else {
-            resetValue = state->apsCurrentResetFrame[pixelPosition];
-            signalValue = data;
-          }
-
-          int32_t pixelValue = 0;
-
-          if (resetValue < 512 || signalValue == 0) {
-            // If the signal value is 0, that is only possible if the camera
-            // has seen tons of light. In that case, the photo-diode current
-            // may be greater than the reset current, and the reset value
-            // never goes back up fully, which results in black spots where
-            // there is too much light. This confuses algorithms, so we filter
-            // this out here by setting the pixel to white in that case.
-            // Another effect of the same thing is the reset value not going
-            // back up to a decent value, so we also filter that out here.
-            pixelValue = 1023;
-          }
-          else {
-            // Do CDS.
-            pixelValue = resetValue - signalValue;
-
-            // Check for underflow.
-            pixelValue = (pixelValue < 0) ? (0) : (pixelValue);
-
-            // Check for overflow.
-            pixelValue = (pixelValue > 1023) ? (1023) : (pixelValue);
-          }
-
-          // Normalize the ADC value to 16bit generic depth. This depends on ADC used.
-          pixelValue = pixelValue << (16 - APS_ADC_DEPTH);
-
-          caerFrameEventGetPixelArrayUnsafe(state->currentFrameEvent[0])[pixelPosition] = htole16(
-            U16T(pixelValue));
-        }
+        size_t pixelPosition = (size_t) (y * state->dvsSizeX) + x;
 
         // Signal read
         if(signalRead){
 
+            if(state->lastAPSEventWasReset){
+                initFrame(handle);
+                state->pixelReceived = 0;
+            }
+            uint16_t resetValue = 0;
+            uint16_t signalValue = 0;
+
+            resetValue = state->apsCurrentResetFrame[pixelPosition];
+            signalValue = intensity;
+
+            int32_t pixelValue = 0;
+            //if (resetValue < 512 || signalValue == 0) {
+              // If the signal value is 0, that is only possible if the camera
+              // has seen tons of light. In that case, the photo-diode current
+              // may be greater than the reset current, and the reset value
+              // never goes back up fully, which results in black spots where
+              // there is too much light. This confuses algorithms, so we filter
+              // this out here by setting the pixel to white in that case.
+              // Another effect of the same thing is the reset value not going
+              // back up to a decent value, so we also filter that out here.
+              //pixelValue = 1023;
+              //printf("Reset");
+            //}
+            //else {
+              // Do CDS.
+              pixelValue = resetValue - signalValue;
+
+              // Check for underflow.
+              pixelValue = (pixelValue < 0) ? (0) : (pixelValue);
+
+              // Check for overflow.
+              pixelValue = (pixelValue > 1023) ? (1023) : (pixelValue);
+            //}
+
+            // Normalize the ADC value to 16bit generic depth. This depends on ADC used.
+            pixelValue = pixelValue << (16 - APS_ADC_DEPTH);
+
+            caerFrameEventGetPixelArrayUnsafe(state->currentFrameEvent[0])[pixelPosition] = htole16(
+              (uint16_t)(pixelValue));
+
+            //printf("Pixel %zu: %d\n",pixelPosition,pixelValue);
+
+            state->lastAPSEventWasReset = false;
+            state->pixelReceived++;
         }
         // Reset read
         else{
+            if(!state->lastAPSEventWasReset){
+                if(state->pixelReceived == state->apsSizeX*state->apsSizeY){
+                    caerFrameEventValidate(state->currentFrameEvent[0], state->currentFramePacket);
+                    // IMU6 and APS operate on an internal event and copy that to the actual output
+                    // packet here, in the END state, for a reason: if a packetContainer, with all its
+                    // packets, is committed due to hitting any of the triggers that are not TS reset
+                    // or TS wrap-around related, like number of polarity events, the event in the packet
+                    // would be left incomplete, and the event in the new packet would be corrupted.
+                    // We could avoid this like for the TS reset/TS wrap-around case (see forceCommit) by
+                    // just deleting that event, but these kinds of commits happen much more often and the
+                    // possible data loss would be too significant. So instead we keep a private event,
+                    // fill it, and then only copy it into the packet here in the END state, at which point
+                    // the whole event is ready and cannot be broken/corrupted in any way anymore.
+                    caerFrameEvent currentFrameEvent = caerFrameEventPacketGetEvent(
+                      state->currentFramePacket, state->currentFramePacketPosition);
+                    memcpy(currentFrameEvent, state->currentFrameEvent[0],
+                      (sizeof(struct caer_frame_event) - sizeof(uint16_t))
+                        + caerFrameEventGetPixelsSize(state->currentFrameEvent[0]));
+                    state->currentFramePacketPosition++;
+                }else{
+                        //printf("Partial frame: %d of %d\n",state->pixelReceived,state->apsSizeX*state->apsSizeY);
+                    }
+                state->pixelReceived = 0;
+            }
+            //printf("Reset Pixel %zu: %d\n",pixelPosition,intensity);
+            state->apsCurrentResetFrame[pixelPosition] = intensity;
+            state->lastAPSEventWasReset = true;
+            state->pixelReceived++;
+        }
+        /*
             bool validFrame = true;
 
             for (size_t j = 0; j < APS_READOUT_TYPES_NUM; j++) {
@@ -1025,12 +1029,18 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
         uint8_t polarity = event >> 11 & 0x01;//((IS_DAVIS208(handle->info.chipID)) && (data < 192)) ? U8T(~code) : (code);
         caerPolarityEventSetPolarity(currentPolarityEvent, polarity );
 
-        if(state->flipY)
+        if(state->dvsFlipX){
+            caerPolarityEventSetX(currentPolarityEvent, state->dvsSizeX -1 - ((event & 0x003FF000) >> 12));
+        }
+        else{
+            caerPolarityEventSetX(currentPolarityEvent, (event & 0x003FF000) >> 12);
+        }
+        if(state->dvsFlipY){
             caerPolarityEventSetY(currentPolarityEvent, state->dvsSizeY -1 - ((event & 0x7FC00000) >> 22));
-        else
+        }
+        else{
             caerPolarityEventSetY(currentPolarityEvent, (event & 0x7FC00000) >> 22);
-
-        caerPolarityEventSetX(currentPolarityEvent, (event & 0x003FF000) >> 12);
+        }
 
         caerPolarityEventValidate(currentPolarityEvent, state->currentPolarityPacket);
         state->currentPolarityPacketPosition++;
