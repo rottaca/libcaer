@@ -435,6 +435,7 @@ playbackHandle playbackOpen(const char *fileName, void (*playbackFinishedCallbac
   state->apsIgnoreEvents = true;
   state->imuIgnoreEvents = true;
 
+  state->lastAPSEventWasReset = false;
   //spiConfigReceive(state->usbState.deviceHandle, DAVIS_CONFIG_APS, DAVIS_CONFIG_APS_GLOBAL_SHUTTER, &param32);
   state->apsGlobalShutter = -1;//param32;
   //spiConfigReceive(state->usbState.deviceHandle, DAVIS_CONFIG_APS, DAVIS_CONFIG_APS_RESET_READ, &param32);
@@ -820,7 +821,18 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
             continue;
 
         uint8_t signalRead = (event >> 10) & 0x01;
-        uint16_t intensity = (event >> 0) & 0x1FF;
+
+
+        if(state->apsIgnoreEvents){
+            if(state->lastAPSEventWasReset || !signalRead){
+                state->apsIgnoreEvents = false;
+                if(!signalRead){
+                    continue;
+                }
+            }
+        }
+
+        uint16_t intensity = (event >> 0) & 0x3FF;
 
         uint16_t x,y;
         if(state->apsFlipX){
@@ -836,16 +848,19 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
             y = (event & 0x7FC00000) >> 22;
         }
 
-
         size_t pixelPosition = (size_t) (y * state->dvsSizeX) + x;
 
         // Signal read
         if(signalRead){
 
             if(state->lastAPSEventWasReset){
+                if(state->pixelReceived != state->apsSizeX*state->apsSizeY){
+                    printf("Incomplete reset frame!\n");
+                }
                 initFrame(handle);
                 state->pixelReceived = 0;
             }
+
             uint16_t resetValue = 0;
             uint16_t signalValue = 0;
 
@@ -853,34 +868,20 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
             signalValue = intensity;
 
             int32_t pixelValue = 0;
-            //if (resetValue < 512 || signalValue == 0) {
-              // If the signal value is 0, that is only possible if the camera
-              // has seen tons of light. In that case, the photo-diode current
-              // may be greater than the reset current, and the reset value
-              // never goes back up fully, which results in black spots where
-              // there is too much light. This confuses algorithms, so we filter
-              // this out here by setting the pixel to white in that case.
-              // Another effect of the same thing is the reset value not going
-              // back up to a decent value, so we also filter that out here.
-              //pixelValue = 1023;
-              //printf("Reset");
-            //}
-            //else {
-              // Do CDS.
-              pixelValue = resetValue - signalValue;
+            // Do CDS.
+            pixelValue = (int32_t)resetValue - (int32_t)signalValue;
 
-              // Check for underflow.
-              pixelValue = (pixelValue < 0) ? (0) : (pixelValue);
+            // Check for underflow.
+            pixelValue = (pixelValue < 0) ? (0) : (pixelValue);
 
-              // Check for overflow.
-              pixelValue = (pixelValue > 1023) ? (1023) : (pixelValue);
-            //}
+            // Check for overflow.
+            pixelValue = (pixelValue > 1023) ? (1023) : (pixelValue);
+
 
             // Normalize the ADC value to 16bit generic depth. This depends on ADC used.
             pixelValue = pixelValue << (16 - APS_ADC_DEPTH);
 
-            caerFrameEventGetPixelArrayUnsafe(state->currentFrameEvent[0])[pixelPosition] = htole16(
-              (uint16_t)(pixelValue));
+            caerFrameEventGetPixelArrayUnsafe(state->currentFrameEvent[0])[pixelPosition] = (uint16_t)(pixelValue);
 
             //printf("Pixel %zu: %d\n",pixelPosition,pixelValue);
 
@@ -908,14 +909,15 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
                       (sizeof(struct caer_frame_event) - sizeof(uint16_t))
                         + caerFrameEventGetPixelsSize(state->currentFrameEvent[0]));
                     state->currentFramePacketPosition++;
+                    state->apsIgnoreEvents = false;
                 }else{
                         //printf("Partial frame: %d of %d\n",state->pixelReceived,state->apsSizeX*state->apsSizeY);
                     }
                 state->pixelReceived = 0;
             }
+            state->lastAPSEventWasReset = true;
             //printf("Reset Pixel %zu: %d\n",pixelPosition,intensity);
             state->apsCurrentResetFrame[pixelPosition] = intensity;
-            state->lastAPSEventWasReset = true;
             state->pixelReceived++;
         }
         /*
