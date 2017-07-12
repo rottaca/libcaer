@@ -1007,7 +1007,11 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
 
             if(diff > 0)
             {
-                usleep(diff);
+                if(diff > 10000000){
+                    printf("Unexpected sleep in playback: %ld\n",diff);
+                }else{
+                    usleep(diff);
+                }
             }
         }
 
