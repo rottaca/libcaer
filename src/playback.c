@@ -809,6 +809,8 @@ static void playbackDavisEventTranslator(void *vhd, uint8_t *buffer, size_t byte
         timestamp |= (int32_t)((uint8_t)buffer[i+6] << 0x08);
         timestamp |= (int32_t)((uint8_t)buffer[i+7] << 0x00);
 
+    timestamp &= ~(1 << 31);
+
     //printf("%d %d %d %d\n",buffer[i+0],buffer[i+1],buffer[i+2],buffer[i+3]);
     //printf("%d %d %d %d\n",buffer[i+4],buffer[i+5],buffer[i+6],buffer[i+7]);
     //printf("%d\n",timestamp);
